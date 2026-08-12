@@ -1,0 +1,100 @@
+let
+    // Source from the primary upstream audit engine query
+    Source = audit_expected_fees,
+
+    // 1. Filter explicitly for "JOB" row types
+    FilteredJobs = Table.SelectRows(Source, each Text.Upper(Text.Trim(Text.From([record_type]))) = "JOB"),
+
+    // 2. Filter strictly for rows where expected_fee_internal_id IS blank, null, or empty text
+    FilterNewLines = Table.SelectRows(FilteredJobs, each [expected_fee_internal_id] = null or Text.Trim(Text.From([expected_fee_internal_id])) = ""),
+
+    // 3. Group by the baseline tracking columns to compress separate change rows into a single wide row per item
+    GroupedRows = Table.Group(FilterNewLines, {
+        "row_hash", "expected_fee_internal_id", "recordid", "Job/Proposal/Opportunity Number", "record_type", "JUM", "Department", "Subteam", "Service Type", "Finance Year"
+    }, {
+        "ChangesTable", each _, type table
+    }),
+
+    // 4. Define the precise structural target column sequence
+    TargetColumns = {
+        "expected_fee_internal_id",
+        "Job number",
+        "Job internal ID",
+        "JUM",
+        "Department",
+        "Subteam",
+        "Service Type",
+        "Probability",
+        "FY",
+        "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"
+    },
+
+    // 5. Map static tracking fields and combine them with dynamic cell change updates
+    ProjectedRecords = Table.AddColumn(GroupedRows, "FinalLayout", each
+        let
+            // Extract the table of individual changes for this specific line item
+            Tbl = [ChangesTable],
+            
+            // Transform the separate ColumnName and CurrentValue rows into a list of name-value pairs
+            ChangeRecordsList = Table.TransformRows(Tbl, (r) =>
+                let
+                    RemF = Text.Replace(Text.Replace(Text.Replace(Text.From(r[ColumnName]), "(Forecast)", ""), "(FORECAST)", ""), "(forecast)", ""),
+                    CleanName = Text.Upper(Text.Trim(RemF))
+                in
+                    [Name = CleanName, Value = r[CurrentValue]]
+            ),
+            
+            // Convert the list of pairs into a single key-value record
+            DynamicChanges = Record.FromList(
+                List.Transform(ChangeRecordsList, each _[Value]), 
+                List.Transform(ChangeRecordsList, each _[Name])
+            ),
+            
+            // Context properties from the group keys (using Master baseline values)
+            StaticMap = [
+                expected_fee_internal_id = [expected_fee_internal_id],
+                #"Job number" = [#"Job/Proposal/Opportunity Number"],
+                #"Job internal ID" = [recordid],
+                BaselineJUM = [JUM],
+                Department = [Department],
+                Subteam = [Subteam],
+                #"Service Type" = [#"Service Type"],
+                Probability = null, 
+                FY = [Finance Year]
+            ],
+            
+            // Overwrite static fields with updated delta matrix values if they changed
+            MergedChanges = Record.Combine({StaticMap, DynamicChanges}),
+            
+            // Remap specific dynamic property updates to fit your exact column labels
+            FinalRecord = [
+                expected_fee_internal_id = Record.FieldOrDefault(MergedChanges, "expected_fee_internal_id", null),
+                #"Job number" = Record.FieldOrDefault(MergedChanges, "Job number", null),
+                #"Job internal ID" = Record.FieldOrDefault(MergedChanges, "Job internal ID", null),
+                JUM = Record.FieldOrDefault(MergedChanges, "JUM", Record.FieldOrDefault(MergedChanges, "BaselineJUM", null)),
+                Department = Record.FieldOrDefault(MergedChanges, "Department", null),
+                Subteam = Record.FieldOrDefault(MergedChanges, "Subteam", null),
+                #"Service Type" = Record.FieldOrDefault(MergedChanges, "Service Type", null),
+                Probability = Record.FieldOrDefault(MergedChanges, "WEIGHTING %", null), 
+                FY = Record.FieldOrDefault(MergedChanges, "FY", null),
+                Apr = Record.FieldOrDefault(MergedChanges, "APR", null),
+                May = Record.FieldOrDefault(MergedChanges, "MAY", null),
+                Jun = Record.FieldOrDefault(MergedChanges, "JUN", null),
+                Jul = Record.FieldOrDefault(MergedChanges, "JUL", null),
+                Aug = Record.FieldOrDefault(MergedChanges, "AUG", null),
+                Sep = Record.FieldOrDefault(MergedChanges, "SEP", null),
+                Oct = Record.FieldOrDefault(MergedChanges, "OCT", null),
+                Nov = Record.FieldOrDefault(MergedChanges, "NOV", null),
+                Dec = Record.FieldOrDefault(MergedChanges, "DEC", null),
+                Jan = Record.FieldOrDefault(MergedChanges, "JAN", null),
+                Feb = Record.FieldOrDefault(MergedChanges, "FEB", null),
+                Mar = Record.FieldOrDefault(MergedChanges, "MAR", null)
+            ]
+        in
+            FinalRecord, type record),
+
+    // 6. Build final tabular view based cleanly on the target columns list
+    OutputTable = Table.ExpandRecordColumn(Table.SelectColumns(ProjectedRecords, {"FinalLayout"}), "FinalLayout", TargetColumns),
+    FinalLayoutSorted = Table.SelectColumns(OutputTable, TargetColumns, MissingField.Ignore)
+in
+    FinalLayoutSorted
