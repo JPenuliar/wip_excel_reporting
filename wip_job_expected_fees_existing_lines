@@ -8,65 +8,58 @@ let
     // 2. Filter out rows where expected_fee_internal_id is blank, null, or empty text
     FilterBlanks = Table.SelectRows(FilteredJobs, each [expected_fee_internal_id] <> null and Text.Trim(Text.From([expected_fee_internal_id])) <> ""),
 
-    // 3. Group by the baseline tracking columns to compress separate change rows into a single wide row per item
-    GroupedRows = Table.Group(FilterBlanks, {
-        "row_hash", "expected_fee_internal_id", "recordid", "Job/Proposal/Opportunity Number", "record_type", "JUM", "Department", "Subteam", "Service Type", "Finance Year"
-    }, {
-        "ChangesTable", each _, type table
+    // 3. Consolidate separate change log rows sharing the same unique tracking ID
+    GroupedRows = Table.Group(FilterBlanks, {"row_hash"}, {
+        {"AllRows", each _, type table},
+        // Preserve base context fields safely from the first record in the group
+        {"expected_fee_internal_id", each _[expected_fee_internal_id]{0}, type any},
+        {"Job internal ID", each _[recordid]{0}, type any},
+        // FIXED: Point directly to the corrected header name containing the space
+        {"Job number", each _[#"Job/Proposal/ Opportunity Number"]{0}, type any},
+        {"record_type", each _[record_type]{0}, type text},
+        {"BaselineJUM", each _[JUM]{0}, type any},
+        {"Department", each _[Department]{0}, type any},
+        {"Subteam", each _[Subteam]{0}, type any},
+        {"Service Type", each _[Service Type]{0}, type any},
+        {"FY", each _[Finance Year]{0}, type any}
     }),
 
-    // 4. Define the precise structural target column sequence
-    TargetColumns = {
-        "expected_fee_internal_id",
-        "Job number",
-        "Job internal ID",
-        "JUM",
-        "Department",
-        "Subteam",
-        "Service Type",
-        "Probability",
-        "FY",
-        "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"
-    },
-
-    // 5. Map static tracking fields and combine them with dynamic cell change updates
-    ProjectedRecords = Table.AddColumn(GroupedRows, "FinalLayout", each
+    // 4. Pivot the granular row modifications into a single dictionary record structure
+    ProjectedRecords = Table.AddColumn(GroupedRows, "FinalLayout", each 
         let
-            // Extract the table of individual changes for this specific line item
-            Tbl = [ChangesTable],
+            TableContext = [AllRows],
             
-            // Transform the separate ColumnName and CurrentValue rows into a list of name-value pairs
-            ChangeRecordsList = Table.TransformRows(Tbl, (r) =>
+            // Build local property record from separate ColumnName and CurrentValue cells
+            RawNames = Table.Column(TableContext, "ColumnName"),
+            RawValues = Table.Column(TableContext, "CurrentValue"),
+            
+            CleanedNames = List.Transform(RawNames, (n) => 
                 let
-                    RemF = Text.Replace(Text.Replace(Text.Replace(Text.From(r[ColumnName]), "(Forecast)", ""), "(FORECAST)", ""), "(forecast)", ""),
-                    CleanName = Text.Upper(Text.Trim(RemF))
+                    RemF = Text.Replace(Text.Replace(Text.Replace(n, "(Forecast)", ""), "(FORECAST)", ""), "(forecast)", "")
                 in
-                    [Name = CleanName, Value = r[CurrentValue]]
+                    Text.Upper(Text.Trim(RemF))
             ),
             
-            // Convert the list of pairs into a single key-value record
-            DynamicChanges = Record.FromList(
-                List.Transform(ChangeRecordsList, each _[Value]), 
-                List.Transform(ChangeRecordsList, each _[Name])
-            ),
-            
-            // Context properties from the group keys (using Master baseline values)
+            ZipPairs = List.Zip({CleanedNames, RawValues}),
+            ValidPairs = List.Select(ZipPairs, (p) => p{0} <> ""),
+            DynamicChanges = Record.FromList(List.Transform(ValidPairs, (p) => p{1}), List.Transform(ValidPairs, (p) => p{0})),
+
+            // Combine base structural context tracking fields
             StaticMap = [
                 expected_fee_internal_id = [expected_fee_internal_id],
-                #"Job number" = [#"Job/Proposal/Opportunity Number"],
-                #"Job internal ID" = [recordid],
-                BaselineJUM = [JUM],
+                #"Job number" = [#"Job number"],
+                #"Job internal ID" = [#"Job internal ID"],
+                JUM = [BaselineJUM],
                 Department = [Department],
                 Subteam = [Subteam],
-                #"Service Type" = [#"Service Type"],
+                #"Service Type" = [Service Type],
                 Probability = null, 
-                FY = [Finance Year]
+                FY = [FY]
             ],
             
-            // Overwrite static fields with updated delta matrix values if they changed
+            // Overwrite baseline context fields if they were modified inside the change log
             MergedChanges = Record.Combine({StaticMap, DynamicChanges}),
             
-            // Remap specific dynamic property updates to fit your exact column labels
             FinalRecord = [
                 expected_fee_internal_id = Record.FieldOrDefault(MergedChanges, "expected_fee_internal_id", null),
                 #"Job number" = Record.FieldOrDefault(MergedChanges, "Job number", null),
@@ -92,6 +85,20 @@ let
             ]
         in
             FinalRecord, type record),
+
+    // 5. Define the precise structural target column sequence
+    TargetColumns = {
+        "expected_fee_internal_id",
+        "Job number",
+        "Job internal ID",
+        "JUM",
+        "Department",
+        "Subteam",
+        "Service Type",
+        "Probability",
+        "FY",
+        "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"
+    },
 
     // 6. Build final tabular view based cleanly on the target columns list
     OutputTable = Table.ExpandRecordColumn(Table.SelectColumns(ProjectedRecords, {"FinalLayout"}), "FinalLayout", TargetColumns),
