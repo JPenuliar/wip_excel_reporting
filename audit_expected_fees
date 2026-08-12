@@ -12,8 +12,8 @@ let
     TS = DateTime.LocalNow(),    
     ValidRecordTypes = {"JOB", "OPPORTUNITY", "PROPOSAL"},        
     
-    // SCHEMA: Matches the exact header naming convention requested for output
-    Sch = {"row_hash", "expected_fee_internal_id", "recordid", "Job/Proposal/Opportunity Number", "record_type", "JUM", "Department", "Subteam", "Service Type", "Finance Year", "LineStatus", "ColumnName", "CurrentValue", "OriginalValue", "LogTimestamp", "ModifiedBy"},    
+    // SCHEMA: Shifted "row_hash" to the very last position in the tracking array
+    Sch = {"expected_fee_internal_id", "recordid", "Job/Proposal/ Opportunity Number", "record_type", "JUM", "Department", "Subteam", "Service Type", "Finance Year", "LineStatus", "ColumnName", "CurrentValue", "OriginalValue", "LogTimestamp", "ModifiedBy", "row_hash"},    
     
     // =========================================================    
     // Native Helper Functions    
@@ -118,7 +118,6 @@ let
                                    else str_m
                 in
                 [                
-                    row_hash = [__RowKey],
                     expected_fee_internal_id = Record.FieldOrDefault(m, "expected_fee_internal_id", null),                
                     recordid = Record.FieldOrDefault(m, "recordid", null),                
                     #"Job/Proposal/Opportunity Number" = Record.FieldOrDefault(m, "Job/Proposal/ Opportunity Number", null),                
@@ -133,7 +132,8 @@ let
                     CurrentValue = current_val,                
                     OriginalValue = original_val,                
                     LogTimestamp = TS,                
-                    ModifiedBy = ModBy            
+                    ModifiedBy = ModBy,
+                    row_hash = [__RowKey]
                 ]
             ), type list),
             
