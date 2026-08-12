@@ -10,7 +10,7 @@ let
 
     // 3. Group by the baseline tracking columns to compress separate change rows into a single wide row per item
     GroupedRows = Table.Group(FilterNewLines, {
-        "row_hash", "expected_fee_internal_id", "recordid", "Job/Proposal/Opportunity Number", "record_type", "JUM", "Department", "Subteam", "Service Type", "Finance Year"
+        "row_hash", "expected_fee_internal_id", "recordid", "Job/Proposal/ Opportunity Number", "record_type", "JUM", "Department", "Subteam", "Service Type", "Finance Year"
     }, {
         "ChangesTable", each _, type table
     }),
