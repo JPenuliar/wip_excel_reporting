@@ -12,7 +12,7 @@ let
     TS = DateTime.LocalNow(),    
     ValidRecordTypes = {"JOB", "OPPORTUNITY", "PROPOSAL"},        
     
-    // SCHEMA: Shifted "row_hash" to the very last position in the tracking array
+    // SCHEMA: Restored "Job/Proposal/ Opportunity Number" directly into the final column selection array
     Sch = {"expected_fee_internal_id", "recordid", "Job/Proposal/ Opportunity Number", "record_type", "JUM", "Department", "Subteam", "Service Type", "Finance Year", "LineStatus", "ColumnName", "CurrentValue", "OriginalValue", "LogTimestamp", "ModifiedBy", "row_hash"},    
     
     // =========================================================    
@@ -120,7 +120,7 @@ let
                 [                
                     expected_fee_internal_id = Record.FieldOrDefault(m, "expected_fee_internal_id", null),                
                     recordid = Record.FieldOrDefault(m, "recordid", null),                
-                    #"Job/Proposal/Opportunity Number" = Record.FieldOrDefault(m, "Job/Proposal/ Opportunity Number", null),                
+                    #"Job/Proposal/ Opportunity Number" = Record.FieldOrDefault(m, "Job/Proposal/ Opportunity Number", null),                
                     record_type = Record.FieldOrDefault(m, "record_type", null),                
                     JUM = Record.FieldOrDefault(m, "JUM", null),                
                     Department = Record.FieldOrDefault(m, "Department", null),                
