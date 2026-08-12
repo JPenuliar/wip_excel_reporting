@@ -1,0 +1,142 @@
+let
+    // =========================================================    
+    // Source Tables & Config Table Lookup    
+    // =========================================================    
+    WIP_Src = Excel.CurrentWorkbook(){[Name="tblWIP"]}[Content],    
+    Mst_Src = Excel.CurrentWorkbook(){[Name="tblMaster"]}[Content],        
+    
+    // Safely check if user configuration table exists and has rows    
+    UserTable = Excel.CurrentWorkbook(){[Name="tblUser"]}[Content],    
+    ModBy = if Table.IsEmpty(UserTable) then "Unknown" else try Text.From(UserTable{0}[User]) otherwise "Unknown",        
+    
+    TS = DateTime.LocalNow(),    
+    ValidRecordTypes = {"JOB", "OPPORTUNITY", "PROPOSAL"},        
+    
+    // SCHEMA: Omitted "guid", keeping "row_hash" as the persistent tracking text key
+    Sch = {"row_hash", "expected_fee_internal_id", "recordid", "Job/Proposal/Opportunity Number", "record_type", "JUM", "Department", "Subteam", "Service Type", "Finance Year", "LineStatus", "ColumnName", "CurrentValue", "OriginalValue", "LogTimestamp", "ModifiedBy"},    
+    
+    // =========================================================    
+    // Native Helper Functions    
+    // =========================================================    
+    fnFltr = (t) => Table.SelectRows(t, each         
+        let             
+            raw_r = Record.FieldOrDefault(_,"record_type",null),            
+            r = if raw_r = null then "" else Text.Upper(Text.Trim(Text.From(raw_r)))        
+        in             
+            List.Contains(ValidRecordTypes, r)),    
+            
+    fnClean = (n) => Text.Trim(Text.Replace(Text.Replace(n,"#(lf)",""),"#(cr)","")),        
+    
+    fnJob = (r) =>         
+        if Record.HasFields(r,"Job/Proposal/Opportunity Number") then Record.FieldOrDefault(r,"Job/Proposal/Opportunity Number",null)         
+        else if Record.HasFields(r,"Job/Proposal/OpportunityNumber") then Record.FieldOrDefault(r,"Job/Proposal/OpportunityNumber",null)        
+        else if Record.HasFields(r,"JobNumber") then Record.FieldOrDefault(r,"JobNumber",null)         
+        else null,    
+        
+    fnNormValue = (v) =>         
+        if v = null then ""         
+        else if Value.Is(v, type number) then Number.ToText(Number.Round(v, 10), "G", "en-GB")         
+        else if Value.Is(v, type date) then Date.ToText(v, "yyyy-MM-dd")         
+        else if Value.Is(v, type datetime) then DateTime.ToText(v, "yyyy-MM-dd HH:mm:ss")         
+        else Text.Trim(Text.From(v)),    
+        
+    // FIXED 4-PART COMPOSITE ANCHOR TEXT ID GENERATOR (Version agnostic)
+    KeyColumns = {"forecastkey", "expected_fee_internal_id", "recordid", "record_type"},        
+    
+    fnKey = (t) => Table.AddColumn(t, "__RowKey", each         
+        let
+            FKey = fnNormValue(Record.FieldOrDefault(_, "forecastkey", null)),
+            EFId = fnNormValue(Record.FieldOrDefault(_, "expected_fee_internal_id", null)),
+            RecId = fnNormValue(Record.FieldOrDefault(_, "recordid", null)),
+            RType = fnNormValue(Record.FieldOrDefault(_, "record_type", null))
+        in
+            "ID[" & FKey & "]-EF[" & EFId & "]-R[" & RecId & "]-T[" & RType & "]", type text),            
+            
+    // Base Filter Steps    
+    WIP_F = fnFltr(WIP_Src),    
+    Mst_F = fnFltr(Mst_Src),    
+    HasData = not Table.IsEmpty(WIP_F) and not Table.IsEmpty(Mst_F),        
+            
+    WIP_Keyed = if HasData then Table.Distinct(fnKey(WIP_F), {"__RowKey"}) else WIP_F,    
+    Mst_Keyed = if HasData then Table.Distinct(fnKey(Mst_F), {"__RowKey"}) else Mst_F,    
+    
+    WIP_Recs = if HasData then Table.SelectColumns(Table.AddColumn(WIP_Keyed, "__WIPRecord", each Record.RemoveFields(_, {"__RowKey"}), type record), {"__RowKey", "__WIPRecord"}) else #table({"__RowKey", "__WIPRecord"}, {}),    
+    Mst_Recs = if HasData then Table.SelectColumns(Table.AddColumn(Mst_Keyed, "__MasterRecord", each Record.RemoveFields(_, {"__RowKey"}), type record), {"__RowKey", "__MasterRecord"}) else #table({"__RowKey", "__MasterRecord"}, {}),    
+    
+    // Inner Join 1-to-1 Matrix    
+    Joined = Table.NestedJoin(WIP_Recs, {"__RowKey"}, Mst_Recs, {"__RowKey"}, "MstRows", JoinKind.Inner),    
+    Expanded = Table.ExpandTableColumn(Joined, "MstRows", {"__MasterRecord"}, {"__MasterRecord"}),    
+    
+    // DYNAMIC AUDIT COLUMN MATRIX (Excludes identity key columns cleanly case-insensitively)    
+    CCols = if HasData then List.Buffer(List.Select(Table.ColumnNames(WIP_Keyed), each         
+        let             
+            o = Text.From(_),             
+            c = Text.Upper(Text.Trim(o)),            
+            isMonthColumn = List.AnyTrue(List.Transform({"JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"}, (m) => Text.Contains(c, m)))        
+        in             
+            List.Contains(Table.ColumnNames(Mst_Keyed), o)             
+            and not List.Contains(List.Transform(KeyColumns, each Text.Upper(_)), c)             
+            and not List.Contains({"__ROWKEY", "FORECASTKEY"}, c)            
+            and (                
+                c = "JUM"                 
+                or c = "WEIGHTING %"                 
+                or (isMonthColumn and Text.Contains(c, "FORECAST") and not Text.Contains(c, "ACTUAL"))            
+            )    )) else {},    
+            
+    // =========================================================    
+    // Row-per-Change Transformation Engine (Generates Lists of Records)
+    // =========================================================    
+    AuditRows = Table.AddColumn(Expanded, "FinalRecordsList", each         
+        let             
+            w = [__WIPRecord],             
+            m = [__MasterRecord],                        
+            
+            // Isolate columns that contain modified values
+            ChangedColumns = List.Select(CCols, (cn) =>                 
+                let                     
+                    wv = fnNormValue(Record.FieldOrDefault(w, cn, null)),                     
+                    mv = fnNormValue(Record.FieldOrDefault(m, cn, null))                 
+                in                     
+                    wv <> mv and not (wv = "" and mv = ""))
+        in             
+            // Transform every individual column modification into its own structured record entry
+            List.Transform(ChangedColumns, (cn) =>
+                let                     
+                    raw_w = Record.FieldOrDefault(w, cn, null),                     
+                    str_w = if raw_w = null then "" else Text.From(raw_w),
+                    current_val = if str_w = "1" and Text.Upper(fnClean(cn)) = "WEIGHTING %" then "100%"                     
+                                  else if str_w = "0.01" and Text.Upper(fnClean(cn)) = "WEIGHTING %" then "1%"                    
+                                  else str_w,
+                                  
+                    raw_m = Record.FieldOrDefault(m, cn, null),
+                    original_val = if raw_m = null then "" else Text.From(raw_m)
+                in
+                [                
+                    row_hash = [__RowKey],
+                    expected_fee_internal_id = Record.FieldOrDefault(m, "expected_fee_internal_id", null),                
+                    recordid = Record.FieldOrDefault(m, "recordid", null),                
+                    #"Job/Proposal/Opportunity Number" = fnJob(m),                
+                    record_type = Record.FieldOrDefault(m, "record_type", null),                
+                    JUM = Record.FieldOrDefault(m, "JUM", null),                
+                    Department = Record.FieldOrDefault(m, "Department", null),                
+                    Subteam = Record.FieldOrDefault(m, "Subteam", null),                
+                    #"Service Type" = Record.FieldOrDefault(m, "Service Type", null),                
+                    #"Finance Year" = Record.FieldOrDefault(m, "Finance Year", null),                
+                    LineStatus = "Changed",                
+                    ColumnName = fnClean(cn),                
+                    CurrentValue = current_val,                
+                    OriginalValue = original_val,                
+                    LogTimestamp = TS,                
+                    ModifiedBy = ModBy            
+                ]
+            ), type list),
+            
+    // Flatten out the list arrays into independent cellular data rows
+    ExpandedList = Table.ExpandListColumn(AuditRows, "FinalRecordsList"),
+    FilteredAudit = Table.SelectRows(ExpandedList, each [FinalRecordsList] <> null),    
+    CleanColumns = Table.SelectColumns(FilteredAudit, {"FinalRecordsList"}),        
+    
+    Out = if not HasData or Table.IsEmpty(CleanColumns) then #table(Sch,{}) else Table.ExpandRecordColumn(CleanColumns, "FinalRecordsList", Sch),    
+    Fin = Table.SelectColumns(Out, Sch, MissingField.Ignore)
+in    
+    Fin
