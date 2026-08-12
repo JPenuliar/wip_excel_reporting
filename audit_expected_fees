@@ -98,18 +98,29 @@ let
                 let                     
                     raw_w = Record.FieldOrDefault(w, cn, null),                     
                     str_w = if raw_w = null then "" else Text.From(raw_w),
-                    current_val = if str_w = "1" and Text.Upper(fnClean(cn)) = "WEIGHTING %" then "100%"                     
-                                  else if str_w = "0.01" and Text.Upper(fnClean(cn)) = "WEIGHTING %" then "1%"                    
+                    
+                    // Format Weighting % changes cleanly as whole numbers (e.g. 100% -> "100", 0.75 -> "75")
+                    current_val = if Text.Upper(fnClean(cn)) = "WEIGHTING %" then 
+                                      let 
+                                          num = try Number.From(Text.Replace(str_w, "%", "")) otherwise 0
+                                      in 
+                                          if num <= 1 and not Text.Contains(str_w, "%") then Text.From(num * 100) else Text.From(num)
                                   else str_w,
                                   
                     raw_m = Record.FieldOrDefault(m, cn, null),
-                    original_val = if raw_m = null then "" else Text.From(raw_m)
+                    str_m = if raw_m = null then "" else Text.From(raw_m),
+                    
+                    original_val = if Text.Upper(fnClean(cn)) = "WEIGHTING %" then 
+                                       let 
+                                           num = try Number.From(Text.Replace(str_m, "%", "")) otherwise 0
+                                       in 
+                                           if num <= 1 and not Text.Contains(str_m, "%") then Text.From(num * 100) else Text.From(num)
+                                   else str_m
                 in
                 [                
                     row_hash = [__RowKey],
                     expected_fee_internal_id = Record.FieldOrDefault(m, "expected_fee_internal_id", null),                
                     recordid = Record.FieldOrDefault(m, "recordid", null),                
-                    // PULLING EXACTLY LIKE JUM: Uses the real column name with the leading space before Opportunity
                     #"Job/Proposal/Opportunity Number" = Record.FieldOrDefault(m, "Job/Proposal/ Opportunity Number", null),                
                     record_type = Record.FieldOrDefault(m, "record_type", null),                
                     JUM = Record.FieldOrDefault(m, "JUM", null),                
